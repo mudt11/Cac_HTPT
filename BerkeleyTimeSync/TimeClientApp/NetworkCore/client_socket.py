@@ -27,7 +27,7 @@ class BerkeleyClientNetwork:
         client_id: str = "Client-01",
         protocol_type: str = "TCP",
         on_sync_request: Optional[Callable[[str], None]] = None,
-        on_sync_result: Optional[Callable[[str, int, Dict[str, Any]], None]] = None,
+        on_sync_result: Optional[Callable[[str, int, Dict[str, Any], int], None]] = None,
         on_connected: Optional[Callable[[], None]] = None,
         on_disconnected: Optional[Callable[[], None]] = None,
         on_log: Optional[Callable[[str], None]] = None
@@ -171,13 +171,14 @@ class BerkeleyClientNetwork:
         # 2. Server phát trả kết quả thời gian trung bình (SYNC_RESULT)
         elif pkt_type == "SYNC_RESULT":
             avg_time = packet.get("avg_time", "")
+            round_id = packet.get("round_id", 0)
             offset = 0
             if self.last_sent_time:
                 offset = calculate_offset(self.last_sent_time, avg_time)
 
-            self._log(f"[KẾT QUẢ ĐỒNG BỘ] Giờ trung bình nhận được: {avg_time} | Độ lệch tính toán: {offset:+d} phút.")
+            self._log(f"[KẾT QUẢ ĐỒNG BỘ] Phiên #{round_id} | Giờ trung bình nhận được: {avg_time} | Độ lệch tính toán: {offset:+d} phút.")
             if self.on_sync_result:
-                self.on_sync_result(avg_time, offset, packet.get("node_times", {}))
+                self.on_sync_result(avg_time, offset, packet.get("node_times", {}), round_id)
 
     def send_time_report(self, current_local_time: str) -> bool:
         """

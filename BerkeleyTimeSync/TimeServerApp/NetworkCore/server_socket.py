@@ -53,6 +53,8 @@ class BerkeleyServerNetwork:
         # { client_id: {"socket": sock, "address": (ip, port), "reported_time": str, "offset": int, "status": str} }
         self.connected_clients: Dict[str, Dict[str, Any]] = {}
         self.current_server_time: str = "10:00"
+        self.current_round_id: int = 0
+        self.sync_active: bool = False
 
     def _log(self, message: str) -> None:
         if self.on_log:
@@ -261,6 +263,9 @@ class BerkeleyServerNetwork:
         target_count = 0
 
         with self.clients_lock:
+            self.current_round_id += 1
+            self.sync_active = True
+
             for c_id, info in self.connected_clients.items():
                 info["reported_time"] = None
                 info["offset"] = None
@@ -268,6 +273,7 @@ class BerkeleyServerNetwork:
 
                 req_packet = {
                     "type": "SYNC_REQUEST",
+                    "round_id": self.current_round_id,
                     "server_time": server_current_time,
                     "message": "Vui lòng gửi mốc thời gian hiện tại"
                 }
@@ -286,15 +292,20 @@ class BerkeleyServerNetwork:
                     except Exception as e:
                         self._log(f"[LỖI GỬI UDP] Tới {c_id}: {e}")
 
-        self._log(f"[PHÁT TÍN HIỆU] Đã gửi yêu cầu đồng bộ tới {target_count} máy trạm. Giờ Server: {server_current_time}")
+        self._log(f"[PHÁT TÍN HIỆU] Đã gửi yêu cầu đồng bộ tới {target_count} máy trạm. Giờ Server: {server_current_time} (Phiên #{self.current_round_id})")
         return target_count
 
     def _check_and_calculate_sync(self) -> None:
         """
         Kiểm tra nếu tất cả các máy trạm đã gửi đủ giờ,
         tiến hành tính Average và phát trả kết quả lại cho từng máy.
+        Đảm bảo chỉ thực thi duy nhất 1 lần cho mỗi phiên đồng bộ (chống Race Condition).
         """
         with self.clients_lock:
+            # Nếu phiên đồng bộ đã được xử lý hoặc chưa kích hoạt -> dừng ngay lập tức
+            if not self.sync_active:
+                return
+
             if not self.connected_clients:
                 return
 
@@ -313,14 +324,18 @@ class BerkeleyServerNetwork:
             if not all_reported:
                 return
 
-            # Gom đủ: Tính giá trị trung bình theo thuật toán Berkeley
+            # GOM ĐỦ: LẬP TỨC KHÓA LƯỢT ĐỒNG BỘ ĐỂ CÁC LUỒNG KHÁC KHÔNG CHẠY TRÙNG
+            self.sync_active = False
+
+            # Tính giá trị trung bình theo thuật toán Berkeley
             avg_time, _ = calculate_average_time(time_list)
             server_offset = calculate_offset(self.current_server_time, avg_time)
 
-            self._log(f"[TÍNH TOÁN BERKELEY] Gom đủ {len(time_list)} mốc giờ. Giờ trung bình tính ra: {avg_time}")
+            self._log(f"[TÍNH TOÁN BERKELEY] Gom đủ {len(time_list)} mốc giờ. Giờ trung bình tính ra: {avg_time} (Phiên #{self.current_round_id})")
 
-            # Gửi SYNC_RESULT cho từng Client
+            # Gửi SYNC_RESULT cho từng Client kèm round_id
             results_summary: Dict[str, Any] = {
+                "round_id": self.current_round_id,
                 "server_time": self.current_server_time,
                 "server_offset": server_offset,
                 "avg_time": avg_time,
@@ -341,6 +356,7 @@ class BerkeleyServerNetwork:
 
                 res_packet = {
                     "type": "SYNC_RESULT",
+                    "round_id": self.current_round_id,
                     "avg_time": avg_time,
                     "node_times": client_time_map
                 }

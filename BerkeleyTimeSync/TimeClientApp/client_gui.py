@@ -35,6 +35,8 @@ class ClientAppGUI:
         self.last_sent_time = "-"
         self.last_avg_received = "-"
         self.last_offset = "-"
+        self.last_handled_round_id = 0
+        self.is_dialog_open = False
 
         # Module mạng Client
         self.client_network: BerkeleyClientNetwork = None
@@ -388,62 +390,84 @@ class ClientAppGUI:
             self._set_alert(f"⚡ ĐÃ NHẬN YÊU CẦU TỪ SERVER: Đã tự động báo mốc giờ '{sent_time}'. Đang chờ kết quả trung bình...")
         self.root.after(0, _handle)
 
-    def _on_sync_result(self, avg_time: str, offset: int, node_times: Dict[str, Any]):
+    def _on_sync_result(self, avg_time: str, offset: int, node_times: Dict[str, Any], round_id: int = 0):
         """
-        Server gửi SYNC_RESULT (kèm avg_time):
+        Server gửi SYNC_RESULT (kèm avg_time và round_id):
         Client tự động cập nhật đồng hồ về avg_time:00 và tiếp tục đếm giây.
+        Đảm bảo tính Idempotent: bỏ qua nếu đã xử lý phiên này hoặc đang hiển thị hộp thoại.
         """
         def _handle():
-            old_time_full = self.current_sim_time_full
-            self.last_avg_received = f"{avg_time}:00"
-            self.last_offset = f"{offset:+d} phút"
+            # MÀNG LỌC IDEMPOTENT: Bỏ qua nếu phiên này đã được xử lý
+            if round_id > 0 and round_id <= self.last_handled_round_id:
+                self._log(f"[BỎ QUA] Đã nhận gói tin trùng cho Phiên #{round_id}, bỏ qua không xử lý lại.")
+                return
 
-            self.lbl_avg_time.config(text=self.last_avg_received)
-            self.lbl_offset.config(text=self.last_offset)
+            # Nếu đang mở hộp thoại xác nhận của lượt trước, tránh mở đè
+            if self.is_dialog_open:
+                self._log(f"[BỎ QUA] Đang hiển thị hộp thoại xác nhận, bỏ qua gói tin lặp.")
+                return
 
-            sign_text = "nhanh thêm" if offset > 0 else ("chậm lại" if offset < 0 else "khớp hoàn toàn")
+            self.last_handled_round_id = round_id
+            self.is_dialog_open = True
 
-            # KIỂM TRA CHẾ ĐỘ XÁC NHẬN TỪ NGƯỜI DÙNG
-            if self.var_ask_confirm.get():
-                confirm_msg = (
-                    f"🔔 MÁY CHỦ ĐÃ TÍNH TOÁN XONG GIỜ TRUNG BÌNH:\n\n"
-                    f"• Giờ hiện tại của máy trạm: {old_time_full}\n"
-                    f"• Giờ trung bình (Avg) nhận từ Server: {avg_time}:00\n"
-                    f"• Độ lệch cần điều chỉnh: Chỉnh {sign_text} {abs(offset)} phút ({offset:+d} phút)\n\n"
-                    f"👉 BẠN CÓ ĐỒNG Ý ĐIỀU CHỈNH ĐỒNG HỒ MÁY TRẠM THEO GIỜ NÀY KHÔNG?"
-                )
-                user_agreed = messagebox.askyesno("Xác nhận điều chỉnh thời gian (Berkeley)", confirm_msg, parent=self.root)
-            else:
-                user_agreed = True
+            try:
+                old_time_full = self.current_sim_time_full
+                self.last_avg_received = f"{avg_time}:00"
+                self.last_offset = f"{offset:+d} phút"
 
-            if user_agreed:
-                # CẬP NHẬT ĐỒNG HỒ THEO KẾT QUẢ ĐỒNG BỘ
-                parts = avg_time.split(":")
-                self.sim_hour = int(parts[0])
-                self.sim_minute = int(parts[1])
-                self.sim_second = 0  # Đưa giây về :00 để đồng bộ nhịp mới
-                self.lbl_big_clock.config(text=self.current_sim_time_full)
+                self.lbl_avg_time.config(text=self.last_avg_received)
+                self.lbl_offset.config(text=self.last_offset)
 
-                # Gửi xác nhận SUCCESS lại cho Server
-                if self.client_network:
-                    self.client_network.send_time_ack(avg_time, offset, status="SUCCESS")
+                sign_text = "nhanh thêm" if offset > 0 else ("chậm lại" if offset < 0 else "khớp hoàn toàn")
 
-                self._set_alert(f"ĐÃ ĐỒNG BỘ: Đồng hồ đã điều chỉnh từ {old_time_full} sang {self.current_sim_time_full} ({offset:+d} phút).")
-                messagebox.showinfo(
-                    "Đồng bộ thành công",
-                    f"🎉 Đồng hồ máy trạm đã được cập nhật thành công thành: {self.current_sim_time_full}",
-                    parent=self.root
-                )
-            else:
-                # NGƯỜI DÙNG TỪ CHỐI ĐIỀU CHỈNH
-                if self.client_network:
-                    self.client_network.send_time_ack(self.current_sim_time_minute, 0, status="REJECTED")
+                # KIỂM TRA CHẾ ĐỘ XÁC NHẬN TỪ NGƯỜI DÙNG
+                if self.var_ask_confirm.get():
+                    confirm_msg = (
+                        f"🔔 MÁY CHỦ ĐÃ TÍNH TOÁN XONG GIỜ TRUNG BÌNH (PHIÊN #{round_id}):\n\n"
+                        f"• Giờ hiện tại của máy trạm: {old_time_full}\n"
+                        f"• Giờ trung bình (Avg) nhận từ Server: {avg_time}:00\n"
+                        f"• Độ lệch cần điều chỉnh: Chỉnh {sign_text} {abs(offset)} phút ({offset:+d} phút)\n\n"
+                        f"👉 BẠN CÓ ĐỒNG Ý ĐIỀU CHỈNH ĐỒNG HỒ MÁY TRẠM THEO GIỜ NÀY KHÔNG?"
+                    )
+                    user_agreed = messagebox.askyesno("Xác nhận điều chỉnh thời gian (Berkeley)", confirm_msg, parent=self.root)
+                else:
+                    user_agreed = True
 
-                self._set_alert(f"TỪ CHỐI ĐIỀU CHỈNH: Giữ nguyên giờ hiện tại {self.current_sim_time_full}.", is_error=True)
-                messagebox.showwarning(
-                    "Đã từ chối điều chỉnh",
-                    f"Bạn đã từ chối điều chỉnh giờ.\nĐồng hồ máy trạm vẫn giữ nguyên mốc: {self.current_sim_time_full}.",
-                    parent=self.root
-                )
+                if user_agreed:
+                    # ĐIỀU CHỈNH ĐỒNG HỒ THEO ĐỘ LỆCH TƯƠNG ĐỐI (BERKELEY RELATIVE OFFSET)
+                    # Lấy giờ hiện tại của máy trạm ngay lúc bấm Yes và cộng thêm độ lệch (offset * 60 giây)
+                    # Giữ nguyên số giây đang chạy tích tắc để không bị lệch nhịp với Server
+                    total_sec = self.sim_hour * 3600 + self.sim_minute * 60 + self.sim_second
+                    new_total_sec = (total_sec + offset * 60) % 86400
+                    self.sim_hour = (new_total_sec // 3600) % 24
+                    self.sim_minute = (new_total_sec % 3600) // 60
+                    self.sim_second = new_total_sec % 60
+                    self.lbl_big_clock.config(text=self.current_sim_time_full)
+
+                    # Gửi xác nhận SUCCESS lại cho Server
+                    if self.client_network:
+                        self.client_network.send_time_ack(self.current_sim_time_minute, offset, status="SUCCESS")
+
+                    self._set_alert(f"ĐÃ ĐỒNG BỘ: Đã điều chỉnh {offset:+d} phút thành {self.current_sim_time_full}.")
+                    messagebox.showinfo(
+                        "Đồng bộ thành công",
+                        f"🎉 Đồng hồ máy trạm đã được cập nhật thành: {self.current_sim_time_full}\n\n"
+                        f"• Độ lệch áp dụng: {offset:+d} phút\n"
+                        f"• Kim giây vẫn chạy liên tục đồng bộ theo thời gian thực!",
+                        parent=self.root
+                    )
+                else:
+                    # NGƯỜI DÙNG TỪ CHỐI ĐIỀU CHỈNH
+                    if self.client_network:
+                        self.client_network.send_time_ack(self.current_sim_time_minute, 0, status="REJECTED")
+
+                    self._set_alert(f"TỪ CHỐI ĐIỀU CHỈNH: Giữ nguyên giờ hiện tại {self.current_sim_time_full}.", is_error=True)
+                    messagebox.showwarning(
+                        "Đã từ chối điều chỉnh",
+                        f"Bạn đã từ chối điều chỉnh giờ.\nĐồng hồ máy trạm vẫn giữ nguyên mốc: {self.current_sim_time_full}.",
+                        parent=self.root
+                    )
+            finally:
+                self.is_dialog_open = False
 
         self.root.after(0, _handle)

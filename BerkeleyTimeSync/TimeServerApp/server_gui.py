@@ -408,22 +408,24 @@ class ServerAppGUI:
                     vals[5] = "Đang chờ Client xác nhận..."
                     self.tree.item(item, values=vals)
 
-            # Cập nhật giờ của chính Server theo giờ trung bình
-            old_server_time = self.current_sim_time_minute
-            parts = avg_time.split(":")
-            self.sim_hour = int(parts[0])
-            self.sim_minute = int(parts[1])
-            self.sim_second = 0  # Đưa giây về :00 để bắt đầu chu kỳ mới
+            # Cập nhật giờ của chính Server theo độ lệch tương đối server_offset
+            old_server_time = self.current_sim_time_full
+            server_offset = results.get("server_offset", 0)
+            total_sec = self.sim_hour * 3600 + self.sim_minute * 60 + self.sim_second
+            new_total_sec = (total_sec + server_offset * 60) % 86400
+            self.sim_hour = (new_total_sec // 3600) % 24
+            self.sim_minute = (new_total_sec % 3600) // 60
+            self.sim_second = new_total_sec % 60
             self.lbl_big_clock.config(text=self.current_sim_time_full)
 
-            server_offset = results.get("server_offset", 0)
             success_msg = (
                 f"🎉 ĐÃ TÍNH TOÁN XONG GIỜ TRUNG BÌNH!\n\n"
-                f"• Giờ trung bình tính toán: {avg_time}:00\n"
+                f"• Giờ trung bình tính toán: {avg_time}\n"
                 f"• Giờ cũ Server: {old_server_time} (Độ lệch Server: {server_offset:+d} phút)\n"
+                f"• Giờ mới Server: {self.current_sim_time_full}\n"
                 f"• Đã gửi kết quả tới {len(clients_info)} máy trạm để xác nhận điều chỉnh."
             )
-            self._set_alert(f"TÍNH TOÁN XONG: Giờ trung bình {avg_time}:00 đã gửi tới {len(clients_info)} máy trạm!")
+            self._set_alert(f"TÍNH TOÁN XONG: Giờ trung bình {avg_time} đã gửi tới {len(clients_info)} máy trạm!")
             messagebox.showinfo("Đã phát kết quả (Berkeley Server)", success_msg, parent=self.root)
 
         self.root.after(0, _update)
