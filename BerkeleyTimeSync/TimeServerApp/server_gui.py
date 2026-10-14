@@ -292,6 +292,7 @@ class ServerAppGUI:
                 on_client_disconnected=self._on_client_disconnected,
                 on_time_reported=self._on_time_reported,
                 on_sync_complete=self._on_sync_complete,
+                on_client_ack=self._on_client_ack,
                 on_log=self._log
             )
 
@@ -404,7 +405,7 @@ class ServerAppGUI:
                     vals[2] = c_data["reported_time"]
                     vals[3] = avg_time
                     vals[4] = f"{c_data['offset']:+d} phút"
-                    vals[5] = "Đã đồng bộ ✓"
+                    vals[5] = "Đang chờ Client xác nhận..."
                     self.tree.item(item, values=vals)
 
             # Cập nhật giờ của chính Server theo giờ trung bình
@@ -417,12 +418,23 @@ class ServerAppGUI:
 
             server_offset = results.get("server_offset", 0)
             success_msg = (
-                f"🎉 ĐỒNG BỘ THỜI GIAN THÀNH CÔNG!\n\n"
+                f"🎉 ĐÃ TÍNH TOÁN XONG GIỜ TRUNG BÌNH!\n\n"
                 f"• Giờ trung bình tính toán: {avg_time}:00\n"
                 f"• Giờ cũ Server: {old_server_time} (Độ lệch Server: {server_offset:+d} phút)\n"
-                f"• Đã phát giờ trung bình tới {len(clients_info)} máy trạm."
+                f"• Đã gửi kết quả tới {len(clients_info)} máy trạm để xác nhận điều chỉnh."
             )
-            self._set_alert(f"ĐỒNG BỘ HOÀN TẤT: Giờ trung bình {avg_time}:00 đã được áp dụng cho toàn bộ {len(clients_info)} máy trạm!")
-            messagebox.showinfo("Đồng bộ hoàn tất (Berkeley)", success_msg, parent=self.root)
+            self._set_alert(f"TÍNH TOÁN XONG: Giờ trung bình {avg_time}:00 đã gửi tới {len(clients_info)} máy trạm!")
+            messagebox.showinfo("Đã phát kết quả (Berkeley Server)", success_msg, parent=self.root)
 
+        self.root.after(0, _update)
+
+    def _on_client_ack(self, client_id: str, ack_status: str):
+        def _update():
+            status_text = "Đã đồng bộ ✓" if ack_status == "SUCCESS" else "Từ chối điều chỉnh ✗"
+            for item in self.tree.get_children():
+                vals = list(self.tree.item(item, "values"))
+                if vals[0] == client_id:
+                    vals[5] = status_text
+                    self.tree.item(item, values=vals)
+                    break
         self.root.after(0, _update)

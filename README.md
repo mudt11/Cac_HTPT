@@ -1,15 +1,19 @@
-# Đồ Án Các Hệ Thống Phân Tán (C-c_HTPT)
+# Đồ Án Các Hệ Thống Phân Tán
 ## Đề tài: Đồng bộ Đồng hồ Vật lý theo Thuật toán Berkeley (Berkeley Time Sync)
 
 Dự án mô phỏng và triển khai thuật toán đồng bộ thời gian Berkeley qua mạng nội bộ (LAN) bằng giao thức TCP Socket với giao diện trực quan (Tkinter GUI).
 
 ---
 
-## 📁 Cấu trúc dự án
+## Cấu trúc dự án
 
 ```text
 Các HTPT/
 ├── BerkeleyTimeSync/
+│   ├── Release/                  # Thư mục chứa các file .exe độc lập chạy ngay
+│   │   ├── TimeServer.exe
+│   │   └── TimeClient.exe
+│   │
 │   ├── TimeServerApp/            # Ứng dụng Máy chủ (Master Node)
 │   │   ├── NetworkCore/          # Xử lý Socket & tính toán thuật toán Berkeley
 │   │   ├── server_gui.py         # Giao diện đồ họa máy chủ (Tkinter)
@@ -34,7 +38,7 @@ Các HTPT/
 
 ---
 
-## 🛠️ Yêu cầu môi trường
+## Yêu cầu môi trường
 
 - **Hệ điều hành:** Windows 10/11.
 - **Ngôn ngữ:** Python 3.8 trở lên.
@@ -42,7 +46,7 @@ Các HTPT/
 
 ---
 
-## 🚀 Hướng dẫn chạy nhanh (Quick Start)
+## Hướng dẫn chạy nhanh (Quick Start)
 
 ### Cách 1: Thử nghiệm nhanh trên cùng 1 máy tính (Localhost)
 
@@ -83,24 +87,26 @@ Các HTPT/
 
 ---
 
-## 📦 Hướng dẫn tự đóng gói file `.exe` (Tùy chọn)
+## Hướng dẫn xuất (build) file `.exe` mới nhất vào thư mục Release
 
-Nếu thành viên trong nhóm muốn tự build ứng dụng ra file thực thi `.exe` độc lập để chạy không cần mở code:
+Nếu thành viên trong nhóm chỉnh sửa mã nguồn và muốn tự xuất lại file `.exe` độc lập để sử dụng hoặc chia sẻ:
 
-1. Cài đặt PyInstaller:
+1. **Cài đặt công cụ PyInstaller (chỉ cần làm một lần):**
    ```powershell
    pip install pyinstaller
    ```
-2. Đóng gói Server:
-   ```powershell
-   cd "BerkeleyTimeSync/TimeServerApp"
-   pyinstaller --noconsole --onefile --name "TimeServer" main.py
-   ```
-   *File `.exe` sẽ được tạo trong thư mục `dist/`.*
 
-3. Đóng gói Client:
+2. **Mở Terminal tại thư mục `BerkeleyTimeSync` của dự án.**
+
+3. **Xuất file `TimeServer.exe` mới vào thư mục Release:**
    ```powershell
-   cd "BerkeleyTimeSync/TimeClientApp"
-   pyinstaller --noconsole --onefile --name "TimeClient" main.py
+   pyinstaller --noconsole --onefile --name "TimeServer" --distpath "Release" --clean "TimeServerApp\main.py"
    ```
-   *File `.exe` sẽ được tạo trong thư mục `dist/`.*
+
+4. **Xuất file `TimeClient.exe` mới vào thư mục Release:**
+   ```powershell
+   pyinstaller --noconsole --onefile --name "TimeClient" --distpath "Release" --clean "TimeClientApp\main.py"
+   ```
+
+5. **Kiểm tra kết quả:**
+   Mở thư mục `Release/`, cả 2 file `TimeServer.exe` và `TimeClient.exe` đã được cập nhật bản mới nhất và sẵn sàng chạy ngay trên mọi máy tính Windows mà không cần cài đặt Python.

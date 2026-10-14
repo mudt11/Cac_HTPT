@@ -206,9 +206,9 @@ class BerkeleyClientNetwork:
             self._log(f"[LỖI GỬI BÁO GIỜ] {e}")
             return False
 
-    def send_time_ack(self, new_time: str, offset: int) -> bool:
+    def send_time_ack(self, new_time: str, offset: int, status: str = "SUCCESS") -> bool:
         """
-        Gửi xác nhận hoàn tất đồng bộ về Server.
+        Gửi xác nhận (Đồng ý SUCCESS hoặc Từ chối REJECTED) về Server.
         """
         if not self.is_connected or not self.client_socket:
             return False
@@ -219,7 +219,7 @@ class BerkeleyClientNetwork:
             "old_time": self.last_sent_time,
             "new_time": new_time,
             "offset_minutes": offset,
-            "status": "SUCCESS"
+            "status": status
         }
         data = serialize_packet(packet)
         try:

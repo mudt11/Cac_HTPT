@@ -30,6 +30,7 @@ class BerkeleyServerNetwork:
         on_client_disconnected: Optional[Callable[[str], None]] = None,
         on_time_reported: Optional[Callable[[str, str], None]] = None,
         on_sync_complete: Optional[Callable[[str, Dict[str, Any]], None]] = None,
+        on_client_ack: Optional[Callable[[str, str], None]] = None,
         on_log: Optional[Callable[[str], None]] = None
     ):
         self.host = host
@@ -41,6 +42,7 @@ class BerkeleyServerNetwork:
         self.on_client_disconnected = on_client_disconnected
         self.on_time_reported = on_time_reported
         self.on_sync_complete = on_sync_complete
+        self.on_client_ack = on_client_ack
         self.on_log = on_log
 
         self.server_socket: Optional[socket.socket] = None
@@ -232,7 +234,22 @@ class BerkeleyServerNetwork:
             self._check_and_calculate_sync()
 
         elif pkt_type == "TIME_ACK":
-            self._log(f"[XÁC NHẬN] {client_id} đã cập nhật giờ mới thành công ({packet.get('new_time')}).")
+            ack_status = packet.get("status", "SUCCESS")
+            display_name = ""
+            status_text = "Đã đồng bộ ✓" if ack_status == "SUCCESS" else "Từ chối điều chỉnh ✗"
+
+            with self.clients_lock:
+                if client_id in self.connected_clients:
+                    display_name = self.connected_clients[client_id].get("custom_id", client_id)
+                    self.connected_clients[client_id]["status"] = status_text
+
+            if ack_status == "SUCCESS":
+                self._log(f"[XÁC NHẬN] {display_name} ĐÃ ĐỒNG Ý và cập nhật giờ mới ({packet.get('new_time')}).")
+            else:
+                self._log(f"[XÁC NHẬN] {display_name} ĐÃ TỪ CHỐI điều chỉnh giờ.")
+
+            if self.on_client_ack:
+                self.on_client_ack(client_id, ack_status)
 
     def trigger_sync(self, server_current_time: str) -> int:
         """

@@ -110,6 +110,17 @@ class ClientAppGUI:
         )
         self.lbl_conn_status.pack(side=tk.LEFT)
 
+        # Hàng 3: Tùy chọn hỏi xác nhận trước khi điều chỉnh giờ
+        row3 = tk.Frame(conn_frame)
+        row3.pack(fill=tk.X, pady=(5, 0))
+
+        self.var_ask_confirm = tk.BooleanVar(value=True)
+        chk_confirm = tk.Checkbutton(
+            row3, text="Yêu cầu hỏi xác nhận (Yes/No) trên máy trạm khi nhận kết quả từ Server",
+            variable=self.var_ask_confirm, font=("Segoe UI", 9, "bold"), fg="#1e40af", cursor="hand2"
+        )
+        chk_confirm.pack(side=tk.LEFT)
+
         # 2. KHU VỰC ĐỒNG HỒ MÔ PHỎNG CỦA MÁY TRẠM
         clock_frame = tk.Frame(self.root, bg="#f8fafc", pady=12, relief=tk.GROOVE, bd=1)
         clock_frame.pack(fill=tk.X, padx=15, pady=6)
@@ -390,27 +401,49 @@ class ClientAppGUI:
             self.lbl_avg_time.config(text=self.last_avg_received)
             self.lbl_offset.config(text=self.last_offset)
 
-            # CẬP NHẬT ĐỒNG HỒ THEO KẾT QUẢ ĐỒNG BỘ
-            parts = avg_time.split(":")
-            self.sim_hour = int(parts[0])
-            self.sim_minute = int(parts[1])
-            self.sim_second = 0  # Đưa giây về :00 để đồng bộ nhịp mới
-            self.lbl_big_clock.config(text=self.current_sim_time_full)
-
-            # Gửi xác nhận lại cho Server
-            if self.client_network:
-                self.client_network.send_time_ack(avg_time, offset)
-
             sign_text = "nhanh thêm" if offset > 0 else ("chậm lại" if offset < 0 else "khớp hoàn toàn")
-            info_msg = (
-                f"🎉 ĐỒNG BỘ THỜI GIAN THÀNH CÔNG!\n\n"
-                f"• Giờ ban đầu của máy: {old_time_full}\n"
-                f"• Giờ trung bình nhận từ Server: {avg_time}:00\n"
-                f"• Quyết định điều chỉnh: Chỉnh {sign_text} {abs(offset)} phút ({offset:+d} phút)\n\n"
-                f"Đồng hồ máy trạm đã được cập nhật thành: {self.current_sim_time_full}"
-            )
 
-            self._set_alert(f"ĐỒNG BỘ HOÀN TẤT: Đồng hồ đã điều chỉnh từ {old_time_full} thành {self.current_sim_time_full} ({offset:+d} phút).")
-            messagebox.showinfo("Đồng bộ hoàn tất (Berkeley Client)", info_msg, parent=self.root)
+            # KIỂM TRA CHẾ ĐỘ XÁC NHẬN TỪ NGƯỜI DÙNG
+            if self.var_ask_confirm.get():
+                confirm_msg = (
+                    f"🔔 MÁY CHỦ ĐÃ TÍNH TOÁN XONG GIỜ TRUNG BÌNH:\n\n"
+                    f"• Giờ hiện tại của máy trạm: {old_time_full}\n"
+                    f"• Giờ trung bình (Avg) nhận từ Server: {avg_time}:00\n"
+                    f"• Độ lệch cần điều chỉnh: Chỉnh {sign_text} {abs(offset)} phút ({offset:+d} phút)\n\n"
+                    f"👉 BẠN CÓ ĐỒNG Ý ĐIỀU CHỈNH ĐỒNG HỒ MÁY TRẠM THEO GIỜ NÀY KHÔNG?"
+                )
+                user_agreed = messagebox.askyesno("Xác nhận điều chỉnh thời gian (Berkeley)", confirm_msg, parent=self.root)
+            else:
+                user_agreed = True
+
+            if user_agreed:
+                # CẬP NHẬT ĐỒNG HỒ THEO KẾT QUẢ ĐỒNG BỘ
+                parts = avg_time.split(":")
+                self.sim_hour = int(parts[0])
+                self.sim_minute = int(parts[1])
+                self.sim_second = 0  # Đưa giây về :00 để đồng bộ nhịp mới
+                self.lbl_big_clock.config(text=self.current_sim_time_full)
+
+                # Gửi xác nhận SUCCESS lại cho Server
+                if self.client_network:
+                    self.client_network.send_time_ack(avg_time, offset, status="SUCCESS")
+
+                self._set_alert(f"ĐÃ ĐỒNG BỘ: Đồng hồ đã điều chỉnh từ {old_time_full} sang {self.current_sim_time_full} ({offset:+d} phút).")
+                messagebox.showinfo(
+                    "Đồng bộ thành công",
+                    f"🎉 Đồng hồ máy trạm đã được cập nhật thành công thành: {self.current_sim_time_full}",
+                    parent=self.root
+                )
+            else:
+                # NGƯỜI DÙNG TỪ CHỐI ĐIỀU CHỈNH
+                if self.client_network:
+                    self.client_network.send_time_ack(self.current_sim_time_minute, 0, status="REJECTED")
+
+                self._set_alert(f"TỪ CHỐI ĐIỀU CHỈNH: Giữ nguyên giờ hiện tại {self.current_sim_time_full}.", is_error=True)
+                messagebox.showwarning(
+                    "Đã từ chối điều chỉnh",
+                    f"Bạn đã từ chối điều chỉnh giờ.\nĐồng hồ máy trạm vẫn giữ nguyên mốc: {self.current_sim_time_full}.",
+                    parent=self.root
+                )
 
         self.root.after(0, _handle)
