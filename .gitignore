@@ -1,0 +1,20 @@
+# Byte-compiled / cache Python
+__pycache__/
+*.py[cod]
+*$py.class
+
+# PyInstaller build files & binaries
+build_client/
+build_server/
+Release/
+*.spec
+*.exe
+
+# File nháp / tài liệu cá nhân
+extracted.txt
+
+# Editor / IDE
+.vscode/
+.idea/
+Thumbs.db
+Desktop.ini
