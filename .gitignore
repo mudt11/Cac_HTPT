@@ -4,8 +4,10 @@ __pycache__/
 *$py.class
 
 # PyInstaller build files & binaries
+build/
 build_client/
 build_server/
+dist/
 Release/
 *.spec
 *.exe
