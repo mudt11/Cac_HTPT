@@ -20,3 +20,6 @@ extracted.txt
 .idea/
 Thumbs.db
 Desktop.ini
+
+/outputs/
+/BerkeleyTimeSync/Docs/
