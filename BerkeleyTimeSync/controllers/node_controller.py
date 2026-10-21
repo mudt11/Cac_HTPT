@@ -26,12 +26,14 @@ from ..core.clock import VirtualClock
 from ..core.election import ElectionSnapshot, ElectionUpdate
 from ..core.models import NodeIdentity, NodeRole, PeerInfo, PeerStatus, SyncRoundState
 from ..core.peer_registry import PeerRegistry
-from ..core.protocol import Message, ProtocolError
+from ..core.protocol import Message, MessageType, ProtocolError
 from ..network.discovery import DiscoveryStatus
 from ..network.heartbeat import HeartbeatSnapshot
 from .membership_controller import MembershipController
 from .leadership_controller import LeadershipController
+from .cluster_controller import ClusterController, ClusterSnapshot
 from .sync_controller import SyncController, SyncDispatch, SyncResult, SyncSnapshot, SyncStateError
+from .sync_journal import SyncJournal
 from ..network.tcp_transport import (
     TCPTransport, EventType as TCPEventType, EventOverflowError as TCPOverflowError,
 )
@@ -49,6 +51,7 @@ class NoticeKind(str, Enum):
     ERROR = "ERROR"
     UNSUPPORTED = "UNSUPPORTED"
     SYNC = "SYNC"
+    CLUSTER = "CLUSTER"
 
 
 @dataclass(frozen=True)
@@ -74,6 +77,7 @@ class NodeSnapshot:
     synchronization: Optional[SyncSnapshot] = None
     auto_sync: bool = True
     sync_interval_s: int = 10
+    cluster: Optional[ClusterSnapshot] = None
 
 
 @dataclass(frozen=True)
@@ -132,6 +136,7 @@ class NodeController:
         self.leadership = LeadershipController(self._registry, self.clock.now_ms,
                                                 monotonic_source=monotonic_source)
         self.sync = SyncController(self._registry, self.clock, monotonic_source=monotonic_source)
+        self.cluster = ClusterController(identity, display_name, ip, monotonic_source=monotonic_source)
         self._auto_sync = auto_sync
         self._sync_interval_s = sync_interval_s
         self._next_sync_ns = 0
@@ -152,8 +157,10 @@ class NodeController:
         self._lock = threading.RLock()
         self._notices = deque(maxlen=256)
         self._dropped_notices = 0
+        self._sync_journal = SyncJournal()
         self._stop_event = threading.Event()
         self._queues = {i: Queue(maxsize=32) for i in range(1, 7) if i != identity.node_id}
+        self._cluster_jobs = {}  # One replaceable monitoring job per remote ID.
         self._workers = []
         self._snapshot = None  # type: Optional[NodeSnapshot]
         self._publish()
@@ -196,13 +203,14 @@ class NodeController:
             return self._snapshot
 
     def _publish(self) -> None:
+        self._journal_sync()
         heartbeat = self.leadership.heartbeat_snapshot()
         snapshot = NodeSnapshot(
             self.identity, self._running, self._ready, self.leadership.snapshot(),
             self._registry.snapshot(), heartbeat,
             self.membership.conflicts(),
             self._tcp.address, self._udp.address, self._dropped_notices, self.sync.snapshot(),
-            self._auto_sync, self._sync_interval_s)
+            self._auto_sync, self._sync_interval_s, self.cluster.snapshot())
         with self._lock:
             self._snapshot = snapshot
 
@@ -246,10 +254,13 @@ class NodeController:
         if old_key != new_key:
             with self._lock:
                 self._generation += 1
+                self._cluster_jobs.clear()
         if current != previous:
             self.membership.set_advertisement(self._local_peer(current), current.leader)
             self.membership.refresh_roles(current.leader)
             self.sync.leadership_changed(current)
+            self._journal_sync()
+            self.cluster.leadership_changed(current)
             if (current.leader, current.role) != (previous.leader, previous.role):
                 self._next_sync_ns = self._now() + self._sync_interval_s * 1000000000
             self._notice(NoticeKind.ELECTION, update.detail)
@@ -266,6 +277,10 @@ class NodeController:
             self._notice(NoticeKind.ERROR, "TCP recipient has no matching discovery entry")
             return
         job = _Dispatch(message, peer, self._generation, deadline)
+        if isinstance(message, Message) and message.type == MessageType.CLUSTER_STATUS:
+            with self._lock:
+                self._cluster_jobs[peer.identity.node_id] = job
+            return
         try:
             self._queues[peer.identity.node_id].put_nowait(job)
         except Full:
@@ -283,10 +298,15 @@ class NodeController:
 
     def _dispatch_loop(self, node_id: int) -> None:
         while not self._stop_event.is_set():
+            queued = True
             try:
                 job = self._queues[node_id].get(timeout=0.1)
             except Empty:
-                continue
+                queued = False
+                with self._lock:
+                    job = self._cluster_jobs.pop(node_id, None)
+                if job is None:
+                    continue
             try:
                 if not self._job_current(job):
                     continue
@@ -309,7 +329,8 @@ class NodeController:
                     self._notice(NoticeKind.ERROR, "TCP dispatch failed: {}: {}".format(
                         type(exc).__name__, exc), job.peer.identity)
             finally:
-                self._queues[node_id].task_done()
+                if queued:
+                    self._queues[node_id].task_done()
 
     def _close_obsolete_connections(self) -> None:
         for connection_id in self.membership.obsolete_connections(self._tcp.connections()):
@@ -359,6 +380,11 @@ class NodeController:
             self._notice(NoticeKind.ERROR, "TCP source does not match discovered membership", message.source)
             self._tcp.disconnect(event.connection.connection_id)
             return
+        if message.type == MessageType.CLUSTER_STATUS:
+            result = self.cluster.handle_tcp(message, received_monotonic_ns=event.monotonic_ns)
+            if not result.accepted:
+                self._notice(NoticeKind.CLUSTER, result.detail, message.source)
+            return
         if self.leadership.accepts(message):
             for update in self.leadership.handle_tcp(message, event.monotonic_ns):
                 self._apply_election(update)
@@ -371,10 +397,15 @@ class NodeController:
                 self._notice(NoticeKind.UNSUPPORTED, "Unsupported TCP message", message.source)
 
     def _sync_result(self, result: SyncResult, *, quiet: bool = False) -> None:
+        self._journal_sync()
         for action in result.outbound:
             self._enqueue(action, action.deadline_ns)
         if not quiet or result.outbound:
-            self._notice(NoticeKind.SYNC, result.detail)
+            self._notice(NoticeKind.SYNC, self._sync_journal.context(self.sync.snapshot()) + " • " + result.detail)
+
+    def _journal_sync(self) -> None:
+        for detail in self._sync_journal.ingest(self.sync.snapshot()):
+            self._notice(NoticeKind.SYNC, detail)
 
     def _start_sync_round(self) -> None:
         heartbeat = self.leadership.heartbeat_snapshot()
@@ -403,6 +434,17 @@ class NodeController:
             self._start_sync_round()
         except (SyncStateError, ValueError) as exc:
             self._notice(NoticeKind.SYNC, "Automatic round deferred: {}".format(exc))
+
+    def _cluster_tick(self) -> None:
+        # Monitoring is best-effort: its failure must not stop synchronization.
+        try:
+            result = self.cluster.tick(peers=self._registry.snapshot(),
+                heartbeat=self.leadership.heartbeat_snapshot(),
+                synchronization=self.sync.snapshot(), clock=self.clock.snapshot())
+            for message in result.outbound:
+                self._enqueue(message, result.deadline_ns)
+        except (ProtocolError, ValueError) as exc:
+            self._notice(NoticeKind.CLUSTER, "Monitoring publication failed: {}".format(exc))
 
     def poll(self, max_events: int = 64) -> NodeSnapshot:
         """Drain bounded batches from BOTH transports, then run due timers."""
@@ -440,6 +482,7 @@ class NodeController:
             for update in cycle.updates:
                 self._apply_election(update)
             self._sync_tick(now)
+            self._cluster_tick()
         except (OSError, RuntimeError, ValueError) as exc:
             self._notice(NoticeKind.ERROR, "Timer/service failure; stopping node: {}".format(exc))
             self.stop()
@@ -497,8 +540,10 @@ class NodeController:
             self._running = False
             self._closed = True
             self._generation += 1
+            self._cluster_jobs.clear()
         self._stop_event.set()
         self.sync.cancel("Node stopped")
+        self.cluster.clear()
         failures = []
         for transport in (self._tcp, self._udp):
             try:

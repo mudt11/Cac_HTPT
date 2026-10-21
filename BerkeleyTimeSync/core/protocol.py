@@ -15,6 +15,7 @@ from typing import Any, Dict, List, Mapping, Optional, Tuple, Union
 from uuid import UUID, uuid4
 
 from .models import ClockState, LeaderIdentity, NodeIdentity, NodeRole, RoundKey
+from .cluster_status import ClusterStatus, ClusterStatusError
 
 
 PROTOCOL_VERSION = 1
@@ -46,6 +47,7 @@ class MessageType(str, Enum):
     OK = "OK"
     COORDINATOR = "COORDINATOR"
     FORCE_MASTER = "FORCE_MASTER"
+    CLUSTER_STATUS = "CLUSTER_STATUS"
 
 
 class AckStatus(str, Enum):
@@ -69,6 +71,7 @@ _REPLY_TYPES = frozenset({
 _MASTER_TYPES = frozenset({
     MessageType.PING, MessageType.SYNC_REQUEST, MessageType.SYNC_ADJUST,
     MessageType.SYNC_CANCEL, MessageType.COORDINATOR, MessageType.FORCE_MASTER,
+    MessageType.CLUSTER_STATUS,
 })
 _WORKER_TYPES = frozenset({
     MessageType.PONG, MessageType.TIME_REPORT, MessageType.TIME_ACK,
@@ -90,6 +93,9 @@ _SCHEMAS = {
     MessageType.OK: (("election_id",), ()),
     MessageType.COORDINATOR: (("election_id",), ()),
     MessageType.FORCE_MASTER: (("reason",), ()),
+    MessageType.CLUSTER_STATUS: (
+        ("sequence", "master_time_ms", "elapsed_ms", "nodes", "round",
+         "master_clock_state", "master_remaining_ms"), ()),
 }
 
 
@@ -130,6 +136,11 @@ def _fields(value: Any, required: Tuple[str, ...], optional: Tuple[str, ...] = (
 
 
 def _payload(message_type: MessageType, payload: Any) -> Mapping[str, Any]:
+    if message_type == MessageType.CLUSTER_STATUS:
+        try:
+            return ClusterStatus.from_payload(payload).frozen_payload()
+        except ClusterStatusError as exc:
+            raise ProtocolError(str(exc)) from exc
     _fields(payload, *_SCHEMAS[message_type])
     values = dict(payload)
     for name, value in values.items():
@@ -232,6 +243,11 @@ class Message:
         if self.type == MessageType.OK and self.target_node_id >= self.source.node_id:
             raise ProtocolError("Bully OK must target a lower node ID")
         payload = _payload(self.type, self.payload)
+        if self.type == MessageType.CLUSTER_STATUS:
+            try:
+                ClusterStatus.from_payload(payload).validate_leader(self.leader)
+            except ClusterStatusError as exc:
+                raise ProtocolError(str(exc)) from exc
         if self.type == MessageType.SYNC_REQUEST:
             if self.source.node_id not in payload["participant_ids"] or self.target_node_id not in payload["participant_ids"]:
                 raise ProtocolError("The Master and recipient must belong to participant_ids")
@@ -259,7 +275,9 @@ class Message:
             "type": self.type.value,
             "message_id": str(self.message_id),
             "source": {"node_id": self.source.node_id, "boot_id": str(self.source.boot_id)},
-            "payload": {k: list(v) if isinstance(v, tuple) else v for k, v in self.payload.items()},
+            "payload": (ClusterStatus.from_payload(self.payload).to_payload()
+                        if self.type == MessageType.CLUSTER_STATUS else
+                        {k: list(v) if isinstance(v, tuple) else v for k, v in self.payload.items()}),
         }
         if self.target_node_id is not None:
             data["target_node_id"] = self.target_node_id
