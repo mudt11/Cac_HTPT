@@ -40,7 +40,7 @@ class SyncJournalTests(unittest.TestCase):
     def test_complete_records_measurements_plan_commands_and_acks(self):
         text = "\n".join(self.journal.ingest(self.complete()))
         for value in ("báo giờ", "RTT", "Delta", "KEPT", "Delta trung bình",
-                      "hiệu chỉnh Master", "Lập lệnh Node 1", "ACK ACCEPTED", "COMPLETED"):
+                      "hiệu chỉnh Master", "Lập lệnh Node 1", "ACK APPLIED", "COMPLETED"):
             self.assertIn(value, text)
         self.assertIn("không phải phép đo hội tụ", text)
 
@@ -78,41 +78,49 @@ class SyncJournalTests(unittest.TestCase):
         text = "\n".join(self.journal.ingest(state))
         self.assertIn("ACK REJECTED • Lý do: Clock paused", text)
 
-    def test_applied_update_emits_only_new_completion(self):
-        state = self.complete()
-        self.journal.ingest(state)
-        updated = replace(state, applied_worker_ids=(1,))
+    def test_applied_ack_arrival_emits_only_new_completion(self):
+        held = []
+        def hold_ack(sender, action):
+            if action.type == MessageType.TIME_ACK and sender == 1:
+                held.append(action)
+                return True
+            return False
+        self.sim.pump(6, self.sim.start(),
+                      drop=hold_ack)
+        self.journal.ingest(self.snapshot())
+        self.sim.pump(1, SyncResult("Deliver delayed ACK", tuple(held)))
+        updated = self.snapshot()
         lines = self.journal.ingest(updated)
-        self.assertEqual(len(lines), 1)
-        self.assertIn("Node 1 • ACK APPLIED", lines[0])
+        self.assertEqual(sum("Node 1 • ACK APPLIED" in line for line in lines), 1)
+        self.assertFalse(any("Delta" in line or "Lập lệnh" in line for line in lines))
         self.assertEqual(self.journal.ingest(updated), ())
 
     def test_worker_state_and_correction_are_logged_locally(self):
         self.complete()
         worker = self.sim.nodes[1]
         text = "\n".join(self.journal.ingest(worker.snapshot()))
-        self.assertIn("Worker cục bộ: SLEWING", text)
+        self.assertIn("Worker cục bộ: APPLIED", text)
         self.assertIn("hiệu chỉnh", text)
         self.sim.time.advance(300000)
         worker.tick()
         lines = self.journal.ingest(worker.snapshot())
-        self.assertEqual(len(lines), 1)
-        self.assertIn("APPLIED", lines[0])
+        self.assertEqual(lines, ())
 
-    def test_outlier_reason_is_logged_with_its_recovery_command(self):
+    def test_large_offset_is_kept_and_its_mean_correction_logged(self):
         self.sim = Cluster({1: 60000, 2: 0, 3: 0, 4: 0, 5: 0, 6: 0})
         text = "\n".join(self.journal.ingest(self.complete()))
         self.assertIn("Node 1 • Delta", text)
-        self.assertIn("OUTSIDE_CLUSTER", text)
-        self.assertIn("Lập lệnh Node 1 • hiệu chỉnh -60000 ms", text)
+        self.assertIn("KEPT", text)
+        self.assertNotIn("OUTSIDE_CLUSTER", text)
+        self.assertIn("Lập lệnh Node 1 • hiệu chỉnh -50000 ms", text)
 
-    def test_master_slew_completion_does_not_reemit_old_measurements(self):
-        self.journal.ingest(self.complete())
+    def test_master_step_completion_does_not_reemit_old_measurements(self):
+        text = "\n".join(self.journal.ingest(self.complete()))
+        self.assertIn("Đồng hồ Master: NORMAL", text)
         self.sim.time.advance(300000)
         self.sim.nodes[6].tick()
         lines = self.journal.ingest(self.snapshot())
-        self.assertEqual(len(lines), 1)
-        self.assertIn("Đồng hồ Master: NORMAL", lines[0])
+        self.assertEqual(lines, ())
         self.assertEqual(self.journal.ingest(self.snapshot()), ())
 
     def test_new_tenure_round_one_is_not_suppressed(self):

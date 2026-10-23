@@ -206,7 +206,7 @@ class NodeWindow:
         drift.grid(row=1, column=0, columnspan=8, sticky="w", pady=(8, 0))
         ttk.Label(drift, text="Tạo lệch mô phỏng:").pack(side="left", padx=4)
         self._drift_buttons = []
-        for title, value in (("+5s", 5000), ("−10s", -10000), ("+60s Outlier", 60000)):
+        for title, value in (("+5s", 5000), ("-10s", -10000), ("+60s", 60000)):
             button = ttk.Button(drift, text=title, command=lambda v=value: self._submit(CommandKind.INJECT_OFFSET, v))
             button.pack(side="left", padx=3)
             self._drift_buttons.append(button)
@@ -466,9 +466,8 @@ class NodeWindow:
                 self._last_error = view.last_error
             if view.clock:
                 self.clock_label.configure(text=clock_text(view.clock.time_ms))
-                self.clock_status.configure(text="{}{} • còn hiệu chỉnh {:+.3f} ms".format(
-                    view.clock.state.value, " / TẠM DỪNG" if view.clock.is_paused else "",
-                    view.clock.remaining_correction_ms))
+                self.clock_status.configure(text="{}{} • Đồng bộ Step: chỉnh giờ trực tiếp".format(
+                    view.clock.state.value, " / TẠM DỪNG" if view.clock.is_paused else ""))
                 self.pause_button.configure(text="Tiếp tục giờ" if view.clock.is_paused else "Tạm dừng giờ")
             if node:
                 election = node.election

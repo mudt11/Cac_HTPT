@@ -8,7 +8,7 @@
 
 | Hạng mục | Trạng thái |
 |---|---|
-| Đồng hồ ảo, Berkeley/RTT, phiên, timeout, ACK, ngoại lai và slewing | Đã triển khai; có kiểm thử tự động trong bộ nhớ |
+| Đồng hồ ảo, Berkeley/RTT, phiên, timeout, ACK và hiệu chỉnh trực tiếp (Step) | Đã triển khai; có kiểm thử tự động trong bộ nhớ |
 | Discovery, heartbeat và bầu chọn | Đã tích hợp; đã kiểm tra chuỗi heartbeat → mất Master → Bully → đồng bộ lại trong bộ nhớ; chưa nghiệm thu broadcast/LAN |
 | Runtime và GUI Node dùng chung | Đã có Dashboard/biểu đồ toàn cụm trên Worker và nhật ký chi tiết; chưa nghiệm thu trực quan và vận hành sáu máy |
 | Chọn card IPv4 | Có đọc cấu hình Windows ở luồng nền và nhập thủ công; lần đọc tại môi trường phát triển bị timeout 10 giây, còn chờ kiểm chứng trên máy thử |
@@ -124,11 +124,11 @@ Rule Allow không bảo đảm vượt qua rule Block hoặc chính sách quản
 | Đồng bộ ngay | Chỉ bật khi máy hiện tại là Master; mở một phiên với các Worker đủ điều kiện heartbeat |
 | Tự động + 5/10 giây | Chọn giá trị và bấm **Áp dụng chu kỳ** khi đang chạy; xem dòng **Đang áp dụng** để biết cấu hình thực tế |
 | Chỉ định máy này làm Master | Manual Override cho chính Node đang thao tác; thực hiện lần lượt trên một máy mỗi lần |
-| +5s / −10s / +60s Outlier | Tạo lệch trực tiếp cho đồng hồ mô phỏng để quan sát phản ứng |
+| +5s / −10s / +60s | Tạo lệch trực tiếp cho đồng hồ mô phỏng để quan sát phản ứng |
 | Nhập độ lệch | Giây có dấu, tối đa ba chữ số thập phân, trong khoảng ±86400 giây |
 | Tạm dừng giờ / Đặt về giờ hệ thống | Chỉ tác động đồng hồ ảo; có thể khiến mẫu của phiên đang chạy bị từ chối |
-| Cụm 6 Node | Card hiện vai trò, IP, liên lạc, giờ, Ping RTT, Delta, hiệu chỉnh, ACK/slewing và tuổi mẫu; card Master thêm số Worker ONLINE trên tối đa 5 Worker. Bảng có thêm RTT đồng bộ và bộ lọc |
-| Biểu đồ hội tụ | Master và Worker vẽ Delta thực đo trước hiệu chỉnh mỗi phiên; mỗi Node/phiên chỉ thêm một điểm, không nội suy tiến trình slewing từ xa |
+| Cụm 6 Node | Card hiện vai trò, IP, liên lạc, giờ, Ping RTT, Delta, hiệu chỉnh, ACK/hiệu chỉnh và tuổi mẫu; card Master thêm số Worker ONLINE trên tối đa 5 Worker. Bảng có thêm RTT đồng bộ và bộ lọc |
+| Biểu đồ hội tụ | Master và Worker vẽ Delta thực đo trước hiệu chỉnh mỗi phiên; mỗi Node/phiên chỉ thêm một điểm, đo lại ở phiên sau để kiểm chứng kết quả Step |
 | Nhật ký | Ghi Master/nhiệm kỳ/phiên, thành viên, báo giờ/RTT, Delta/bộ lọc, kế hoạch hiệu chỉnh, ACK, thay đổi trạng thái, lý do kết thúc và danh sách thiếu; giữ tối đa 2000 dòng trong bộ nhớ |
 | Xác nhận thay thế Node cũ | Chỉ dùng sau khi xác minh Node cũ đã dừng và ứng viên mới đúng máy; Controller từ chối thay thế Node cũ còn sống/nghi ngờ |
 
@@ -137,12 +137,12 @@ Khi Manual Master mất heartbeat, cụm có thể quay về bầu chọn tự �
 ### Đọc trạng thái đúng
 
 - **DISCOVERY/ONLINE**: nhận được liên lạc discovery; chưa đồng nghĩa với xác nhận heartbeat.
-- **ACCEPTED**: Worker nhận và lên lịch hiệu chỉnh.
-- **APPLIED**: Worker báo đã hoàn tất slewing.
+- **ACCEPTED**: Worker đã nhận lệnh, chưa xác nhận áp dụng xong; vẫn được hỗ trợ khi đọc dữ liệu từ bản cũ.
+- **APPLIED**: Worker báo đã áp dụng hiệu chỉnh. Bản Step trả trạng thái này ngay sau khi chỉnh đồng hồ ảo.
 - **Phiên COMPLETED**: các lệnh hiệu chỉnh cần thiết đã được xác nhận; không đồng nghĩa với đo được mọi đồng hồ đã hội tụ.
 - **PARTIAL**: thiếu thành viên/phản hồi/xác nhận hoặc có mẫu không dùng được; xem log và danh sách thiếu.
 - Giờ trên card của Node từ xa là **mẫu cuối nhận được**, không phải đồng hồ trực tiếp. Bảng có phiên và tuổi mẫu.
-- Master phát `CLUSTER_STATUS` qua TCP mỗi giây cho các peer đã biết. Worker dùng dữ liệu này cho bảng/biểu đồ toàn cụm; đồng hồ lớn và trạng thái slewing cục bộ vẫn lấy từ chính Node đó.
+- Master phát `CLUSTER_STATUS` qua TCP mỗi giây cho các peer đã biết. Worker dùng dữ liệu này cho bảng/biểu đồ toàn cụm; đồng hồ lớn và trạng thái đồng hồ cục bộ vẫn lấy từ chính Node đó.
 - **MASTER/ONLINE**: trạng thái ONLINE theo bản tin của Master. **CŨ/ONLINE**: bản tin đã cũ từ 4 giây kể từ lúc nhận; đây là quan sát trước đó, không phải xác nhận Node vẫn ONLINE ở thời điểm đang xem.
 - Tuổi mẫu `≈` cộng tuổi mẫu do Master ghi với thời gian cục bộ từ lúc nhận bản tin, chưa gồm độ trễ truyền chưa biết. Dòng nguồn Master hiển thị riêng tuổi bản tin; hai loại tuổi này khác nhau.
 - Card Master đếm Worker có heartbeat ONLINE theo nguồn tương ứng; nhãn `(Master)` hoặc `(CŨ)` cho biết số liệu từ bản tin Master. `--` nghĩa chưa có dữ liệu, không thay bằng số 0. Discovery đơn thuần không được tính là kết nối đã xác nhận.
@@ -158,11 +158,11 @@ Khi Manual Master mất heartbeat, cụm có thể quay về bầu chọn tự �
 
 Master đo RTT và ước lượng Delta bằng bốn mốc: Master gửi, Worker nhận, Worker gửi, Master nhận. Dùng hai mốc Worker để tính ảnh hưởng của thời gian xử lý thay vì xem toàn bộ khoảng đó là độ trễ truyền. Ước lượng vẫn phụ thuộc giả định đường truyền gần đối xứng và độ lệch tương đối ổn định trong phép đo.
 
-Bộ lọc hiện loại RTT trên 500 ms rồi chọn nhóm độ lệch gần nhau lớn nhất, có khoảng trải không quá 10000 ms; nếu nhóm lớn nhất không duy nhất hoặc thiếu mẫu thì không tính trung bình. Nhóm có thể không chứa Master. Đây là chính sách khác với ví dụ loại theo `|Delta_i|` so với Master trong PDF; cần làm rõ khi nghiệm thu, không coi hai chính sách là tương đương.
+Mẫu RTT trên 500 ms bị loại do chất lượng đo. Mọi mẫu còn lại, cùng mẫu Master, được dùng để tính trung bình; không có ngưỡng độ lệch hay bước chọn nhóm đồng hồ gần nhau.
 
-Mẫu ngoại lai do lệch đồng hồ có thể bị loại khỏi trung bình nhưng vẫn nhận hiệu chỉnh phục hồi; mẫu RTT cao không được dùng để gửi hiệu chỉnh trong phiên đó. Ngưỡng lọc nằm trong cấu hình lõi, chưa có ô chỉnh trên GUI.
+Độ lệch lớn không làm mẫu bị loại khỏi phép tính trung bình. Mẫu RTT quá cao không nhận hiệu chỉnh trong phiên đó. Thay đổi này bỏ chính sách lọc độ lệch mô tả trong bản đặc tả PDF cũ theo yêu cầu mới.
 
-Slewing mặc định thay đổi tốc độ tối đa 10%: hiệu chỉnh 1 giây cần khoảng 10 giây; lệch 60 giây có thể cần khoảng 10 phút nếu giữ một lệnh hiệu chỉnh. Không dùng thời gian chờ ngắn để kết luận slewing bị kẹt. Hiệu chỉnh âm không làm giờ nhảy lùi; thao tác tạo lỗi/đặt giờ của người dùng có thể làm đồng hồ mô phỏng nhảy.
+Luồng đồng bộ dùng Step: Master và Worker cộng/trừ ngay mức hiệu chỉnh Berkeley vào đồng hồ ảo. Hiệu chỉnh âm có thể làm giờ nhảy lùi; không thay đổi giờ Windows. Đây là thay đổi thiết kế so với Slewing trong đặc tả cũ để demo không phải chờ hàng chục phút khi lệch lớn. Nếu yêu cầu không nhảy lùi là bắt buộc, Step không đáp ứng yêu cầu đó. API Slewing vẫn được giữ trong VirtualClock nhưng luồng đồng bộ không gọi nó để áp dụng lệnh. Timeout và lịch chạy vẫn dựa trên monotonic, không dựa trên giờ ảo có thể nhảy.
 
 Thông điệp được kiểm tra schema, nguồn theo bảng thành viên, boot ID, nhiệm kỳ và phiên. Các kiểm tra này không phải xác thực mật mã; giao thức hiện chưa có mã hóa hay cơ chế đăng nhập Node.
 
@@ -178,23 +178,23 @@ python -B -m unittest discover -s BerkeleyTimeSync/tests -p "test_*.py" -v
 |---|---|
 | `test_protocol.py` | 15 test: schema, Unicode/UTF-8, frame TCP chia/gộp, giới hạn kích thước, ngữ cảnh phiên |
 | `test_runtime.py` | 9 test: luồng sở hữu, hàng đợi, lỗi lệnh/dịch vụ, startup và shutdown |
-| `test_sync.py` | 15 test: sáu SyncController mô phỏng, RTT, timeout, thiếu ACK, ngoại lai, slewing, đổi Master |
+| `test_sync.py` | 19 test: sáu SyncController mô phỏng, RTT, timeout, thiếu ACK, Step, độ lệch lớn, đo lại sau hiệu chỉnh, lệnh trùng/cũ, đầu vào không hợp lệ và API Slewing |
 | `test_cluster_status.py` | 30 test: schema dữ liệu toàn cụm, liên kết Node/phiên, giá trị thiếu và tính bất biến |
 | `test_cluster_controller.py` | 23 test: phát/nhận dữ liệu giám sát, thứ tự bản tin, dữ liệu cũ, đổi Master/boot và hàng đợi ưu tiên |
 | `test_dashboard.py` | 35 test: ACK, chiếu dữ liệu lên bảng/card, tuổi mẫu, số Worker, biểu đồ và chống vẽ lặp |
-| `test_sync_journal.py` | 16 test: nhật ký theo phiên, RTT/Delta/bộ lọc, hiệu chỉnh, ACK, timeout, slewing và chống ghi lặp |
+| `test_sync_journal.py` | 16 test: nhật ký theo phiên, RTT/Delta/bộ lọc, hiệu chỉnh Step, ACK, timeout và chống ghi lặp |
 
-Tổng cộng 143 bài kiểm thử lưu trong dự án. Các test dùng bộ điều khiển giả hoặc thời gian/gói tin mô phỏng; các bài runtime/sync chặn tạo socket. Chúng không mở cửa sổ GUI, không thay đổi firewall và không xác nhận discovery/bầu chọn qua mạng thật. Bài đổi Master trong `test_sync.py` chủ động cung cấp lãnh đạo mới; không phải bài kiểm chứng thuật toán Bully.
+Tổng cộng 147 bài kiểm thử lưu trong dự án. Các test dùng bộ điều khiển giả hoặc thời gian/gói tin mô phỏng; các bài runtime/sync chặn tạo socket. Chúng không mở cửa sổ GUI, không thay đổi firewall và không xác nhận discovery/bầu chọn qua mạng thật. Bài đổi Master trong `test_sync.py` chủ động cung cấp lãnh đạo mới; không phải bài kiểm chứng thuật toán Bully.
 
-Đã chạy riêng 9 kiểm tra tích hợp trong bộ nhớ với LeadershipController, heartbeat, Bully và SyncController thật, thay vận chuyển bằng gói tin mô phỏng có serialize/parse: tự bầu Node 6; đồng bộ năm Worker; không bầu trước deadline từ PING cuối; mất Master và bầu Node 5; hủy phiên cũ/từ chối hiệu chỉnh cũ và đồng bộ lại; hội tụ sau slewing; Worker mất mạng rồi trở lại trong cùng boot; chỉ định Master 2; mất Master thủ công và quay về Bully. Cả 9 kiểm tra đạt, độ lệch sau slewing trong kịch bản đó là 0 ms. Kịch bản này chưa được lưu thành file, không được tính vào 143 bài và không tự chạy lại bằng lệnh trên; kết quả không thay thế kiểm tra transport, discovery, GUI hoặc LAN thực tế.
+Ghi nhận lịch sử trước khi chuyển sang Step: đã chạy riêng 9 kiểm tra tích hợp trong bộ nhớ với LeadershipController, heartbeat, Bully và SyncController thật, thay vận chuyển bằng gói tin mô phỏng có serialize/parse: tự bầu Node 6; đồng bộ năm Worker; không bầu trước deadline từ PING cuối; mất Master và bầu Node 5; hủy phiên cũ/từ chối hiệu chỉnh cũ và đồng bộ lại; hội tụ sau slewing; Worker mất mạng rồi trở lại trong cùng boot; chỉ định Master 2; mất Master thủ công và quay về Bully. Cả 9 kiểm tra đạt, độ lệch sau slewing trong kịch bản đó là 0 ms. Kịch bản này chưa được lưu thành file, không được tính vào bộ kiểm thử hiện tại và không tự chạy lại bằng lệnh trên; kết quả không thay thế kiểm tra transport, discovery, GUI hoặc LAN thực tế.
 
 ## Kịch bản nghiệm thu sáu máy LAN/Hotspot
 
 Thực hiện sau khi hoàn thiện mã, ghi kết quả thực tế thay vì dùng kết quả mô phỏng làm bằng chứng:
 
 1. Khởi chạy sáu Node có ID khác nhau trên mạng chung; kiểm tra discovery, bảng thành viên và Master tự động.
-2. Tạo lệch +5s/−10s, đồng bộ và theo dõi ACK, slewing, số đo của các phiên tiếp theo; ghi chênh lệch bằng số đo, không chỉ bằng mắt.
-3. Tạo một Node lệch +60s; kiểm tra bị loại khỏi trung bình và theo dõi chính sách phục hồi.
+2. Tạo lệch +5s/−10s, đồng bộ và theo dõi ACK APPLIED và số đo của các phiên tiếp theo; ghi chênh lệch bằng số đo, không chỉ bằng mắt.
+3. Tạo một Node lệch +60s; kiểm tra mẫu hợp lệ được tính vào trung bình, Step được áp dụng và đo lại sai số ở phiên tiếp theo.
 4. Dừng một Worker giữa phiên; xác nhận phiên kết thúc trong hạn và các Node khác tiếp tục.
 5. Dừng Master giữa phiên; kiểm tra bầu Master mới, hủy phiên cũ và tiếp tục đồng bộ.
 6. Chỉ định Master thủ công; kiểm tra chuyển vai trò và phục hồi sau khi Manual Master dừng.
@@ -230,3 +230,7 @@ python -m PyInstaller --onefile --noconsole --name BerkeleyNode --paths "." --di
 Đầu ra dự kiến: `BerkeleyTimeSync/Release/Node-build-01/BerkeleyNode.exe`. Nếu build báo lỗi, giữ lại log để xử lý. Gói bàn giao cần có hai script firewall bên cạnh hướng dẫn sử dụng; không yêu cầu chạy GUI bằng Administrator.
 
 Phải kiểm tra bản build trên máy Windows đích không cài Python trước khi ghi nhận “chạy độc lập”. Các tùy chọn đóng gói tham khảo từ [tài liệu PyInstaller](https://pyinstaller.org/en/stable/usage.html).
+
+## Đồng bộ khi độ lệch ban đầu lớn
+
+Đã bỏ ngưỡng chênh lệch 10 giây và cơ chế chọn nhóm đồng hồ gần nhau. Master tính trung bình từ mẫu của chính nó và mọi báo giờ Worker hợp lệ, không loại mẫu vì độ lệch lớn. Kiểm tra chất lượng RTT, timeout và tính hợp lệ của thông điệp vẫn áp dụng. Nút +60s chỉ tạo độ lệch mô phỏng. Step áp dụng ngay hiệu chỉnh, kể cả khi lệch vài phút. Hai Node lệch 447,175 giây còn chênh tối đa 1 ms sau một phiên trong kiểm thử mô phỏng; đây không phải cam kết sai số trên LAN. Biểu đồ vẫn giữ số đo trước hiệu chỉnh của phiên hiện tại, nên cần phiên đo tiếp theo để thấy kết quả. Dùng cùng bản mới trên mọi Node; EXE cũ vẫn chạy cơ chế cũ cho tới khi được build lại.

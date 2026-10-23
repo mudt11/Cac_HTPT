@@ -148,15 +148,14 @@ class BerkeleyPlan:
 
 def build_plan(
     snapshot: SessionSnapshot, measurements: Iterable[ClockMeasurement], *,
-    max_rtt_ms: float = 500.0, max_spread_ms: float = 10000.0,
+    max_rtt_ms: float = 500.0,
     min_cluster_size: int = 2,
 ) -> BerkeleyPlan:
     """Build relative corrections for a COMPUTING snapshot without side effects.
 
     Every report needs an accompanying Master reception timestamp. Slow
-    measurements are neither averaged nor corrected. A timely offset outlier
-    is excluded from averaging but still receives a correction toward the
-    selected group; the Master is also corrected even if excluded.
+    measurements are neither averaged nor corrected. Every timely report is
+    averaged with the Master, regardless of the size of its clock offset.
 
     No consensus returns a non-ready plan with no corrections. Missing Worker
     reports remain omitted, allowing the session to finish PARTIAL. Callers
@@ -206,7 +205,7 @@ def build_plan(
 
     estimates = tuple(estimate_offset(by_id[k]) for k in sorted(by_id))
     selection = filter_outliers(
-        key, estimates, max_rtt_ms=max_rtt_ms, max_spread_ms=max_spread_ms,
+        key, estimates, max_rtt_ms=max_rtt_ms,
         min_cluster_size=min_cluster_size,
     )
     if not selection.can_average:

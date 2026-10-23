@@ -125,14 +125,15 @@ class SyncController:
     not include time waiting to prepare a request. REQUEST.timeout_ms carries
     their TOTAL budget, giving Workers enough time for partial collection.
     COMPLETED means commands acknowledged, not measured clock convergence.
-    APPLIED is a Worker report of slew completion, also not a convergence proof.
+    Corrections are applied immediately to the virtual clock (Step).
+    APPLIED reports correction completion, also not a convergence proof.
     """
 
     def __init__(self, registry: Optional[PeerRegistry] = None,
                  clock: Optional[VirtualClock] = None, *,
                  report_timeout_ms: int = 2000, computation_timeout_ms: int = 2000,
                  ack_timeout_ms: int = 2000, min_workers: int = 1,
-                 max_rtt_ms: float = 500.0, max_spread_ms: float = 10000.0,
+                 max_rtt_ms: float = 500.0,
                  min_cluster_size: int = 2, max_event_age_ms: int = 1000,
                  monotonic_source: Callable[[], int] = monotonic_ns) -> None:
         if (registry is None) != (clock is None):
@@ -153,9 +154,9 @@ class SyncController:
         self._age_ns = _positive_ms(max_event_age_ms, "max_event_age_ms") * 1000000
         # Reuse filter configuration validation rather than duplicating its math.
         filter_outliers(RoundKey(LeaderIdentity(NodeIdentity(1)), 1), (),
-                        max_rtt_ms=max_rtt_ms, max_spread_ms=max_spread_ms,
+                        max_rtt_ms=max_rtt_ms,
                         min_cluster_size=min_cluster_size)
-        self._filter_args = dict(max_rtt_ms=max_rtt_ms, max_spread_ms=max_spread_ms,
+        self._filter_args = dict(max_rtt_ms=max_rtt_ms,
                                  min_cluster_size=min_cluster_size)
         self._min_workers = min_workers
         self._registry, self._clock = registry, clock
@@ -389,7 +390,7 @@ class SyncController:
             plan = build_plan(snapshot, self._measurements.values(), **self._filter_args)
             self._plan = plan
             if not plan.ready:
-                return self._fail("No unambiguous Berkeley consensus")
+                return self._fail("Not enough usable clock measurements for Berkeley averaging")
             reading = self._clock_read()
             if reading.is_paused:
                 return self._fail("Master virtual clock paused during collection")
@@ -400,9 +401,11 @@ class SyncController:
                 if not self._consistent(reference, reading):
                     return self._fail("Master clock changed after measurement")
             # Revalidate BEFORE changing any clock or exposing adjustments.
+            if not 0 <= reading.time_ms + plan.master_correction_ms <= MAX_INTEGER:
+                return self._fail("Master correction would exceed protocol clock range")
             self._session.begin_ack_wait(plan.adjustments)
-            self._clock.schedule_correction(plan.master_correction_ms)
-            self._owns_slew = True
+            self._clock.apply_correction(plan.master_correction_ms)
+            self._owns_slew = False
             deadline = self._session.snapshot().ack_deadline_ns
             actions = ()
             members = {p.node_id: p for p in snapshot.participants}
@@ -592,17 +595,21 @@ class SyncController:
             reason = "Worker virtual clock is paused"
         elif not self._consistent(worker.report_clock, reading):
             reason = "Worker clock changed after its report"
+        elif not 0 <= reading.time_ms + message.payload["correction_ms"] <= MAX_INTEGER:
+            reason = "Worker correction would exceed protocol clock range"
+        if reason is None:
+            try:
+                self._clock.apply_correction(message.payload["correction_ms"])
+            except ValueError as exc:
+                reason = str(exc)[:512]
         if reason is not None:
             worker.state = WorkerState.REJECTED
             worker.command = message
             worker.ack = self._ack(message, AckStatus.REJECTED, reason)
         else:
-            self._clock.schedule_correction(message.payload["correction_ms"])
-            self._owns_slew = True
+            self._owns_slew = False
             worker.command = message
-            worker.state = (WorkerState.APPLIED if self._clock.state == ClockState.NORMAL
-                            else WorkerState.SLEWING)
-            status = AckStatus.APPLIED if worker.state == WorkerState.APPLIED else AckStatus.ACCEPTED
-            worker.ack = self._ack(message, status)
+            worker.state = WorkerState.APPLIED
+            worker.ack = self._ack(message, AckStatus.APPLIED)
         self._remember(message)
         return SyncResult("Worker adjustment handled", self._queue_ack(worker.ack))

@@ -273,7 +273,7 @@ class NodeTable(ttk.Frame):
                    "correction", "ack", "filter", "sample")
         self.tree = ttk.Treeview(self, columns=columns, show="headings", height=7)
         titles = ("ID", "Tên", "IP", "Vai trò", "Liên lạc", "Ping ms", "Sync RTT ms",
-                  "Delta ms", "Chỉnh ms", "ACK / Slewing", "Bộ lọc", "Phiên / tuổi mẫu")
+                  "Delta ms", "Chỉnh ms", "ACK / Hiệu chỉnh", "Bộ lọc", "Phiên / tuổi mẫu")
         widths = (40, 95, 115, 85, 155, 75, 90, 90, 85, 180, 160, 145)
         for column, title, width in zip(columns, titles, widths):
             self.tree.heading(column, text=title)
@@ -286,7 +286,7 @@ class NodeTable(ttk.Frame):
             "Giờ trên card từ xa là mẫu cuối nhận được, không phải đồng hồ trực tiếp. "
             "Delta/RTT đồng bộ là số đo của phiên ghi trong bảng. DISCOVERY chỉ xác nhận liên lạc discovery. "
             "MASTER/ là góc nhìn của Master; CŨ/ là dữ liệu quá 4 giây. Tuổi mẫu ≈ chưa gồm độ trễ truyền. "
-            "ACCEPTED = đã nhận hiệu chỉnh; APPLIED = đã hoàn tất slewing, chưa chứng minh hội tụ."
+            "ACCEPTED = đã nhận lệnh; APPLIED = đã áp dụng hiệu chỉnh. Đo lại ở phiên sau để kiểm chứng hội tụ."
         )).grid(row=3, column=0, sticky="w", pady=(10, 0))
         self.update_rows(project_rows(None))
 

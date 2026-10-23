@@ -112,7 +112,7 @@ class ClusterControllerTests(unittest.TestCase):
         self.assertEqual(rows[2].sample.offset_ms, -3000)
         self.assertEqual(rows[1].adjustment.correction_ms, -4500)
         self.assertEqual(rows[6].adjustment.correction_ms, plan.master_correction_ms)
-        self.assertEqual(rows[1].adjustment.ack_status, "ACCEPTED")
+        self.assertEqual(rows[1].adjustment.ack_status, "APPLIED")
         self.assertEqual(status.round.state, SyncRoundState.COMPLETED)
         self.assertEqual(rows[6].sample.offset_ms, 0)
 

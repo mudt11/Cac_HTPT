@@ -15,7 +15,7 @@ from BerkeleyTimeSync.core.election import ElectionSnapshot, ElectionState
 from BerkeleyTimeSync.core.models import ClockState, LeaderIdentity, NodeIdentity, NodeRole, PeerInfo, SyncRoundState
 from BerkeleyTimeSync.core.outlier_filter import RejectionReason
 from BerkeleyTimeSync.core.peer_registry import PeerRegistry
-from BerkeleyTimeSync.core.protocol import MessageType, ProtocolError
+from BerkeleyTimeSync.core.protocol import MAX_INTEGER, MessageType, ProtocolError
 
 
 class Timeline:
@@ -94,25 +94,27 @@ class SynchronizationTests(unittest.TestCase):
         guard.start()
         self.addCleanup(guard.stop)
 
-    def test_six_nodes_ack_then_slew_across_midnight(self):
+    def test_six_nodes_step_and_remeasure_across_midnight(self):
         cluster = Cluster()
+        cluster.time.advance(1000)
         cluster.pump(cluster.master, cluster.start())
         snapshot = cluster.nodes[6].snapshot()
         self.assertEqual(snapshot.session.state, SyncRoundState.COMPLETED)
         self.assertEqual(len(snapshot.session.acknowledgments), 5)
-        self.assertTrue(any(c.state == ClockState.SLEWING for c in cluster.clocks.values()))
+        self.assertTrue(all(a.payload["status"] == "APPLIED" for a in snapshot.session.acknowledgments))
         # Fixed RTT/symmetric paths give known offsets: average = +500 ms.
         self.assertEqual(snapshot.plan.master_correction_ms, 500)
         self.assertEqual({m.target_node_id: m.payload["correction_ms"] for m in snapshot.plan.adjustments},
                          {1: -4500, 2: 3500, 3: -1500, 4: 500, 5: 1500})
-        cluster.time.advance(60000)
-        for i in range(1, 6):
-            cluster.pump(i, cluster.nodes[i].tick())
         readings = [clock.now_ms() for clock in cluster.clocks.values()]
         self.assertLessEqual(max(readings) - min(readings), 1)
         self.assertGreater(min(readings), 86400000)
         self.assertTrue(all(c.state == ClockState.NORMAL for c in cluster.clocks.values()))
         self.assertEqual(cluster.nodes[6].snapshot().applied_worker_ids, (1, 2, 3, 4, 5))
+        cluster.pump(6, cluster.start())
+        plan = cluster.nodes[6].snapshot().plan
+        self.assertEqual(plan.master_correction_ms, 0)
+        self.assertTrue(all(m.payload["correction_ms"] == 0 for m in plan.adjustments))
 
     def test_round_cannot_overlap(self):
         cluster = Cluster()
@@ -137,7 +139,7 @@ class SynchronizationTests(unittest.TestCase):
         with self.assertRaises(SyncStateError):
             cluster.nodes[6].prepare_send(action)
 
-    def test_duplicate_adjustment_does_not_restart_slew(self):
+    def test_duplicate_adjustment_does_not_apply_step_twice(self):
         cluster = Cluster({1: 1000, 6: 0})
         messages = cluster.pump(6, cluster.start())
         adjustment = next(m for m in messages if m.type == MessageType.SYNC_ADJUST)
@@ -213,14 +215,77 @@ class SynchronizationTests(unittest.TestCase):
         self.assertNotIn(1, {m.target_node_id for m in snapshot.plan.adjustments})
         self.assertEqual(snapshot.session.state, SyncRoundState.PARTIAL)
 
-    def test_outlier_does_not_bias_mean_but_can_receive_recovery_correction(self):
+    def test_large_offset_contributes_to_mean(self):
         cluster = Cluster({1: 60000, 2: 0, 3: 0, 4: 0, 5: 0, 6: 0})
         cluster.pump(6, cluster.start())
         plan = cluster.nodes[6].snapshot().plan
-        self.assertEqual(plan.master_correction_ms, 0)
-        self.assertEqual([r.sample.identity.node_id for r in plan.filter_result.rejected], [1])
+        self.assertEqual(plan.master_correction_ms, 10000)
+        self.assertEqual(plan.filter_result.rejected, ())
         correction = next(m for m in plan.adjustments if m.target_node_id == 1)
-        self.assertEqual(correction.payload["correction_ms"], -60000)
+        self.assertEqual(correction.payload["correction_ms"], -50000)
+
+    def test_two_nodes_seven_minutes_apart_average_and_converge(self):
+        cluster = Cluster({1: 447175, 2: 0})
+        cluster.pump(2, cluster.start())
+        snapshot = cluster.nodes[2].snapshot()
+        self.assertEqual(snapshot.session.state, SyncRoundState.COMPLETED)
+        self.assertEqual(snapshot.plan.filter_result.rejected, ())
+        self.assertEqual(snapshot.plan.master_correction_ms, 223588)
+        self.assertEqual(snapshot.plan.adjustments[0].payload["correction_ms"], -223588)
+        self.assertTrue(all(c.state == ClockState.NORMAL for c in cluster.clocks.values()))
+        self.assertEqual(snapshot.session.acknowledgments[0].payload["status"], "APPLIED")
+        self.assertLessEqual(abs(cluster.clocks[1].now_ms() - cluster.clocks[2].now_ms()), 1)
+
+    def test_worker_rejects_step_outside_protocol_range_without_changing_clock(self):
+        for correction in (-MAX_INTEGER, MAX_INTEGER):
+            with self.subTest(correction=correction):
+                cluster = Cluster({1: 1000, 6: 0})
+                cluster.pump(6, cluster.start(), drop=lambda source, a: a.type == MessageType.SYNC_ADJUST)
+                command = cluster.nodes[6].snapshot().plan.adjustments[0]
+                command = replace(command, payload={"correction_ms": correction})
+                before = cluster.clocks[1].snapshot()
+                response = cluster.nodes[1].handle_tcp(command)
+                self.assertEqual(cluster.clocks[1].snapshot(), before)
+                ack = cluster.nodes[1].prepare_send(response.outbound[0])
+                self.assertEqual(ack.payload["status"], "REJECTED")
+
+    def test_step_replaces_pending_slew_and_preserves_fractional_time(self):
+        timeline = Timeline()
+        clock = VirtualClock(initial_time_ms=10000, monotonic_source=timeline)
+        clock.schedule_correction(1000)
+        timeline.advance(5)
+        clock.apply_correction(-100)
+        self.assertEqual(clock.now_ms(), 9905)
+        self.assertEqual(clock.state, ClockState.NORMAL)
+        timeline.ns += 500000
+        self.assertEqual(clock.now_ms(), 9906)
+        timeline.advance(1000)
+        self.assertEqual(clock.now_ms(), 10906)
+
+    def test_step_zero_pause_resume_and_invalid_input(self):
+        timeline = Timeline()
+        clock = VirtualClock(initial_time_ms=10000, monotonic_source=timeline)
+        clock.schedule_correction(-1000)
+        clock.apply_correction(0)
+        self.assertEqual(clock.snapshot().remaining_correction_ns, 0)
+        clock.pause()
+        clock.apply_correction(225000)
+        timeline.advance(1000)
+        self.assertTrue(clock.is_paused)
+        self.assertEqual(clock.now_ms(), 235000)
+        clock.apply_correction(-225000)
+        clock.resume()
+        timeline.advance(1)
+        self.assertEqual(clock.now_ms(), 10001)
+        clock.schedule_correction(1000)
+        before = clock.snapshot()
+        for value in (True, 1.5, None):
+            with self.assertRaises(TypeError):
+                clock.apply_correction(value)
+            self.assertEqual(clock.snapshot(), before)
+        with self.assertRaises(ValueError):
+            clock.apply_correction(-10002)
+        self.assertEqual(clock.snapshot(), before)
 
     def test_leadership_change_cancels_round_and_old_dispatch(self):
         cluster = Cluster()

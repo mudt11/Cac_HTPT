@@ -145,6 +145,21 @@ class VirtualClock:
             self._rebase(*self._observe())
             self._slew_rate_ppm = value
 
+    def apply_correction(self, correction_ms: int) -> None:
+        """Apply a relative correction immediately to the virtual clock.
+
+        Negative corrections may move time backwards. Preserve submillisecond
+        precision and the paused state, and cancel any remaining slew rather
+        than adding it to this new correction. Never change the OS clock.
+        """
+        _integer(correction_ms, "correction_ms")
+        with self._lock:
+            real_ns, virtual_ns, _ = self._observe()
+            corrected_ns = virtual_ns + correction_ms * _NS_PER_MS
+            if corrected_ns < 0:
+                raise ValueError("Correction would precede the Unix epoch")
+            self._rebase(real_ns, corrected_ns, 0)
+
     def pause(self) -> None:
         """Freeze virtual time and slew progress for a simulator demonstration."""
         with self._lock:

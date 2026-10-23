@@ -1,16 +1,13 @@
-"""Select consistent clock offsets before Berkeley averaging.
+"""Validate measurement quality without rejecting clocks for large offsets.
 
-The TEMPO fault-tolerant average selects a largest set of mutually close
-clock differences (Gusella and Zatti, UCB/CSD-87-337). This implementation
-first rejects slow measurements and refuses tied largest sets rather than
-arbitrarily trusting the Master. Selection is not proof of a physical fault.
-No averaging, clock updates, network operations or file writes occur here.
+All timely Worker measurements and the Master contribute to Berkeley's mean.
+There is no offset threshold, cluster selection or tied-cluster rejection.
 """
 
 from dataclasses import dataclass
 from enum import Enum
 from math import isfinite
-from typing import Dict, Iterable, List, Optional, Tuple
+from typing import Dict, Iterable, Optional, Tuple
 
 from .models import NodeIdentity, RoundKey
 from .protocol import MAX_INTEGER
@@ -104,26 +101,21 @@ class FilterResult:
 
 def filter_outliers(
     round_key: RoundKey, samples: Iterable[OffsetSample], *,
-    max_rtt_ms: float = 500.0, max_spread_ms: float = 10000.0,
+    max_rtt_ms: float = 500.0,
     min_cluster_size: int = 2,
 ) -> FilterResult:
-    """Keep the unique largest cluster whose full offset span fits the limit.
+    """Accept every timely sample, regardless of its clock offset.
 
     samples contains only Worker estimates; the Master is added once with
     offset 0 and RTT 0. Repeated node IDs or mixed rounds are input errors,
     never additional votes. Size includes the Master when it belongs to the
-    selected cluster. A cluster need not contain the Master or a majority;
-    callers can request a stricter minimum for a particular experiment.
-
-    The inclusive defaults permit RTT up to 500 ms and pairwise offset spread
-    up to 10 seconds. They are configurable demo policies, not accuracy
-    guarantees. The spread is pairwise, not an absolute distance from Master.
+    accepted set. The minimum prevents averaging the Master alone when no
+    usable Worker report exists. RTT remains a measurement quality check.
     Results are ordered by node ID and are independent of input order.
     """
     if not isinstance(round_key, RoundKey):
         raise TypeError("round_key must be a RoundKey")
     max_rtt = _number(max_rtt_ms, "max_rtt_ms", nonnegative=True)
-    max_spread = _number(max_spread_ms, "max_spread_ms", nonnegative=True)
     if type(min_cluster_size) is not int:
         raise TypeError("min_cluster_size must be an integer")
     if not 2 <= min_cluster_size <= 6:
@@ -149,35 +141,14 @@ def filter_outliers(
             reasons[sample.identity.node_id] = RejectionReason.HIGH_RTT
         else:
             eligible.append(sample)
-    eligible.sort(key=lambda s: (s.offset_ms, s.identity.node_id))
-
-    # With at most six samples, enumerate all maximal contiguous windows.
-    # Any largest mutually close set must contain every intermediate offset.
-    best: List[Tuple[OffsetSample, ...]] = []
-    best_size = 0
-    for left in range(len(eligible)):
-        right = left
-        while right < len(eligible) and eligible[right].offset_ms - eligible[left].offset_ms <= max_spread:
-            right += 1
-        candidate = tuple(eligible[left:right])
-        if len(candidate) > best_size:
-            best = [candidate]
-            best_size = len(candidate)
-        elif len(candidate) == best_size:
-            best.append(candidate)
-
-    if best_size < min_cluster_size:
+    if len(eligible) < min_cluster_size:
         status = FilterStatus.INSUFFICIENT_SAMPLES
         accepted: Tuple[OffsetSample, ...] = ()
         failure_reason = RejectionReason.INSUFFICIENT_CONSENSUS
-    elif len(best) != 1:
-        status = FilterStatus.AMBIGUOUS_CLUSTER
-        accepted = ()
-        failure_reason = RejectionReason.AMBIGUOUS_CONSENSUS
     else:
         status = FilterStatus.ACCEPTED
-        accepted = tuple(sorted(best[0], key=lambda s: s.identity.node_id))
-        failure_reason = RejectionReason.OUTSIDE_CLUSTER
+        accepted = tuple(sorted(eligible, key=lambda s: s.identity.node_id))
+        failure_reason = RejectionReason.INSUFFICIENT_CONSENSUS
 
     kept_ids = {sample.identity.node_id for sample in accepted}
     rejected = tuple(
